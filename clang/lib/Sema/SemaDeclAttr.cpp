@@ -6183,7 +6183,10 @@ static void handleLaunchBoundsAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
 static std::pair<Expr *, int>
 makeClusterDimsArgExpr(Sema &S, Expr *E, const CUDAClusterDimsAttr &AL,
                        const unsigned Idx) {
-  if (!E || S.DiagnoseUnexpandedParameterPack(E))
+  if (!E)
+    return {nullptr, 1};
+
+  if (S.DiagnoseUnexpandedParameterPack(E))
     return {};
 
   // Accept template arguments for now as they depend on something else.
@@ -6197,15 +6200,16 @@ makeClusterDimsArgExpr(Sema &S, Expr *E, const CUDAClusterDimsAttr &AL,
         << &AL << Idx << AANT_ArgumentIntegerConstant << E->getSourceRange();
     return {};
   }
-  // Make sure we can fit it in 4 bits.
-  if (!I->isIntN(4)) {
-    S.Diag(E->getExprLoc(), diag::err_ice_too_large)
-        << toString(*I, 10, false) << 4 << /*Unsigned=*/1;
-    return {};
-  }
   if (*I < 0) {
     S.Diag(E->getExprLoc(), diag::warn_attribute_argument_n_negative)
         << &AL << Idx << E->getSourceRange();
+    return {};
+  }
+  // Make sure we can fit it in 16 bits, so the product below cannot overflow.
+  if (!I->isIntN(16)) {
+    S.Diag(E->getExprLoc(), diag::err_ice_too_large)
+        << toString(*I, 10, false) << 16 << /*Unsigned=*/1;
+    return {};
   }
 
   return {ConstantExpr::Create(S.getASTContext(), E, APValue(*I)),
@@ -6223,7 +6227,7 @@ CUDAClusterDimsAttr *Sema::createClusterDimsAttr(const AttributeCommonInfo &CI,
   if (!NewX || (Y && !NewY) || (Z && !NewZ))
     return nullptr;
 
-  int FlatDim = ValX * ValY * ValZ;
+  int64_t FlatDim = int64_t(ValX) * ValY * ValZ;
   const llvm::Triple TT =
       (!Context.getLangOpts().CUDAIsDevice && Context.getAuxTargetInfo())
           ? Context.getAuxTargetInfo()->getTriple()
